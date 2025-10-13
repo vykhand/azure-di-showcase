@@ -379,17 +379,56 @@ class ResultsDisplay:
     @staticmethod
     def _render_json_view(raw_result: Dict[str, Any]):
         """Render the raw JSON view."""
-        # Add download button
-        col1, col2 = st.columns([3, 1])
+        # Add download and copy buttons
+        col1, col2, col3 = st.columns([2, 1, 1])
+
+        json_str = json.dumps(raw_result, indent=2, ensure_ascii=False)
+
         with col2:
-            json_str = json.dumps(raw_result, indent=2, ensure_ascii=False)
             st.download_button(
                 label="💾 Download JSON",
                 data=json_str,
                 file_name="analysis_result.json",
                 mime="application/json"
             )
-        
+
+        with col3:
+            # Copy to clipboard button using JavaScript
+            copy_button_html = f"""
+            <button onclick="copyToClipboard()" style="
+                background-color: #0e1117;
+                color: #ffffff;
+                border: 1px solid #ffffff33;
+                border-radius: 0.5rem;
+                padding: 0.25rem 0.75rem;
+                cursor: pointer;
+                font-size: 14px;
+                height: 38px;
+                width: 100%;
+                margin-top: 0px;
+            ">
+                📋 Copy JSON
+            </button>
+            <script>
+            function copyToClipboard() {{
+                const jsonText = {json.dumps(json_str)};
+                navigator.clipboard.writeText(jsonText).then(function() {{
+                    const btn = event.target;
+                    const originalText = btn.innerHTML;
+                    btn.innerHTML = '✅ Copied!';
+                    btn.style.backgroundColor = '#00cc00';
+                    setTimeout(function() {{
+                        btn.innerHTML = originalText;
+                        btn.style.backgroundColor = '#0e1117';
+                    }}, 2000);
+                }}, function(err) {{
+                    alert('Failed to copy: ' + err);
+                }});
+            }}
+            </script>
+            """
+            st.components.v1.html(copy_button_html, height=50)
+
         # Display JSON with syntax highlighting
         st.markdown("### Raw Analysis Result")
         st.json(raw_result)

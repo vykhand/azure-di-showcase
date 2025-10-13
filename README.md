@@ -39,7 +39,8 @@ A comprehensive Streamlit application that showcases all Azure Document Intellig
 - **Fields View**: Structured data extraction with confidence scores
 - **Markdown Output**: Clean, copyable text representation
 - **Raw JSON**: Complete API response with syntax highlighting
-- Download and copy functionality
+- **Download JSON**: Export analysis results to JSON file
+- **Copy to Clipboard**: One-click copy of JSON results
 
 ### 🔧 Advanced Features
 - Real-time progress indicators
@@ -68,19 +69,24 @@ A comprehensive Streamlit application that showcases all Azure Document Intellig
 
 3. **Configure Azure Document Intelligence credentials**
 
-   **Option 1: Environment Variables**
+   **Option 1: In-App Configuration (Easiest)**
+   - Start the app without credentials
+   - Enter your endpoint and API key in the sidebar input boxes
+   - Credentials are session-only (not saved)
+
+   **Option 2: Environment Variables**
    ```bash
    export AZURE_DI_ENDPOINT='https://your-resource.cognitiveservices.azure.com/'
    export AZURE_DI_API_KEY='your-api-key-here'
    ```
 
-   **Option 2: .env file**
+   **Option 3: .env file**
    ```bash
-   cp .env.template .env
-   # Edit .env and add your credentials
+   cp .env .env.example  # Create example from your .env
+   # Edit .env with your actual credentials
    ```
 
-   **Option 3: Streamlit Secrets (for deployment)**
+   **Option 4: Streamlit Secrets (for deployment)**
    ```toml
    # .streamlit/secrets.toml
    AZURE_DI_ENDPOINT = "https://your-resource.cognitiveservices.azure.com/"
@@ -243,12 +249,36 @@ See [LOGGING.md](LOGGING.md) for complete documentation.
 
 This project is provided as-is for demonstration purposes. Please ensure compliance with Azure Document Intelligence terms of service.
 
+## Deployment
+
+### Deploy to Streamlit Community Cloud
+
+Want to share this app with others? Deploy it for free on Streamlit Community Cloud!
+
+See the comprehensive deployment guide: [STREAMLIT_DEPLOYMENT.md](STREAMLIT_DEPLOYMENT.md)
+
+**Quick Deploy Steps:**
+1. Push your code to GitHub (without .env file!)
+2. Sign in to [share.streamlit.io](https://share.streamlit.io)
+3. Create new app and select your repository
+4. Add Azure credentials to Streamlit secrets
+5. Deploy and share your app URL!
+
+### What's New
+
+**Version 1.1 Features:**
+- ✨ In-app credential configuration (no .env required)
+- 📋 Copy JSON to clipboard button
+- 🚀 Ready for Streamlit Community Cloud deployment
+- 📚 Comprehensive deployment documentation
+
 ## Support
 
 For issues related to:
 - **Azure Document Intelligence**: Check [Azure documentation](https://docs.microsoft.com/en-us/azure/applied-ai-services/form-recognizer/)
 - **This demo**: Create an issue in the repository
 - **Streamlit**: Visit [Streamlit documentation](https://docs.streamlit.io/)
+- **Deployment**: See [STREAMLIT_DEPLOYMENT.md](STREAMLIT_DEPLOYMENT.md)
 
 ---
 

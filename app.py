@@ -103,25 +103,54 @@ def initialize_session_state():
 def create_azure_client() -> Optional[AzureDocumentIntelligenceClient]:
     """Create and return Azure Document Intelligence client."""
     client = create_client_from_env()
-    
+
     if not client:
-        st.sidebar.error(
-            "❌ **Azure DI Configuration Missing**\n\n"
-            "Please configure your Azure Document Intelligence credentials:\n\n"
-            "**Option 1: Environment Variables**\n"
-            "```bash\n"
-            "export AZURE_DI_ENDPOINT='https://your-resource.cognitiveservices.azure.com/'\n"
-            "export AZURE_DI_API_KEY='your-api-key-here'\n"
-            "```\n\n"
-            "**Option 2: Streamlit Secrets**\n"
-            "Add to `.streamlit/secrets.toml`:\n"
-            "```toml\n"
-            "AZURE_DI_ENDPOINT = \"https://your-resource.cognitiveservices.azure.com/\"\n"
-            "AZURE_DI_API_KEY = \"your-api-key-here\"\n"
-            "```"
+        st.sidebar.warning("⚠️ **Azure DI credentials not found in environment**")
+        st.sidebar.markdown("### 🔐 Enter Credentials")
+
+        # Add input boxes for endpoint and API key
+        endpoint = st.sidebar.text_input(
+            "Azure DI Endpoint",
+            placeholder="https://your-resource.cognitiveservices.azure.com",
+            help="Your Azure Document Intelligence endpoint URL",
+            key="azure_di_endpoint_input"
         )
+
+        api_key = st.sidebar.text_input(
+            "Azure DI API Key",
+            type="password",
+            placeholder="Enter your API key",
+            help="Your Azure Document Intelligence API key",
+            key="azure_di_api_key_input"
+        )
+
+        # If both fields are filled, create client
+        if endpoint and api_key:
+            try:
+                client = AzureDocumentIntelligenceClient(endpoint.strip(), api_key.strip())
+                st.sidebar.success("✅ Credentials provided!")
+                return client
+            except Exception as e:
+                st.sidebar.error(f"Failed to create client: {str(e)}")
+                return None
+
+        # Show help message
+        with st.sidebar.expander("💡 Alternative Setup Methods", expanded=False):
+            st.markdown(
+                "**Option 1: Environment Variables**\n"
+                "```bash\n"
+                "export AZURE_DI_ENDPOINT='https://your-resource.cognitiveservices.azure.com/'\n"
+                "export AZURE_DI_API_KEY='your-api-key-here'\n"
+                "```\n\n"
+                "**Option 2: Streamlit Secrets**\n"
+                "Add to `.streamlit/secrets.toml`:\n"
+                "```toml\n"
+                "AZURE_DI_ENDPOINT = \"https://your-resource.cognitiveservices.azure.com/\"\n"
+                "AZURE_DI_API_KEY = \"your-api-key-here\"\n"
+                "```"
+            )
         return None
-    
+
     return client
 
 
@@ -131,6 +160,14 @@ def render_main_header():
     st.markdown(
         '<p class="sub-header">Comprehensive showcase of all Azure Document Intelligence capabilities via REST API</p>',
         unsafe_allow_html=True
+    )
+
+    # Attribution and license notice
+    st.info(
+        "👤 **Author:** Andrey Vykhodtsev | "
+        "📜 **License:** MIT License | "
+        "⚖️ Attribution required when using or modifying this code | "
+        "[View License](https://github.com/vykhand/azure-di-showcase/blob/main/LICENSE)"
     )
 
 

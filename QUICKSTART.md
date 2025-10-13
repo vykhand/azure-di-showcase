@@ -10,16 +10,22 @@ pip install -r requirements.txt
 ### Step 2: Configure Azure Credentials
 Choose one of these options:
 
-**Option A: Environment Variables (Recommended)**
+**Option A: In-App Configuration (Easiest)**
+- Skip this step and go directly to Step 3
+- Enter credentials in the sidebar when the app starts
+- Perfect for quick testing and demos
+
+**Option B: Environment Variables**
 ```bash
 export AZURE_DI_ENDPOINT='https://your-resource-name.cognitiveservices.azure.com/'
 export AZURE_DI_API_KEY='your-api-key-here'
 ```
 
-**Option B: Create .env file**
+**Option C: Create .env file**
 ```bash
-cp .env.template .env
-# Edit .env and add your credentials
+# Create .env file with your credentials
+echo "AZURE_DI_ENDPOINT=https://your-resource.cognitiveservices.azure.com" > .env
+echo "AZURE_DI_API_KEY=your-api-key-here" >> .env
 ```
 
 ### Step 3: Run the Application
@@ -117,10 +123,11 @@ pip install -r requirements.txt
 - Use page ranges for large documents
 
 ### Cool Features to Try
+- **In-app credentials**: Enter Azure credentials directly in the sidebar
 - **Multi-page navigation**: Upload a multi-page PDF
 - **Feature toggles**: Enable/disable OCR high resolution
 - **Annotation viewer**: Toggle annotations on/off
-- **Export options**: Download JSON results
+- **Export options**: Download JSON results or copy to clipboard
 - **Zoom controls**: Zoom in on document details
 
 ## 📊 What to Expect
