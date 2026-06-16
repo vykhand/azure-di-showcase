@@ -10,6 +10,7 @@ import time
 import traceback
 import logging
 import inspect
+from collections import Counter
 from typing import Dict, Any, Optional, Union, Tuple
 from io import BytesIO
 
@@ -39,6 +40,9 @@ class AzureDocumentIntelligenceClient:
         self.api_key = api_key
         self.api_version = AZURE_DI_API_VERSION
         self.base_url = f"{self.endpoint}/documentintelligence"
+        # Operation-Location of the most recent analyze request, used to fetch
+        # generated artifacts (searchable PDF, figure images) by resultId.
+        self.last_operation_location: Optional[str] = None
         
     def _get_headers(self, content_type: str = "application/json") -> Dict[str, str]:
         """Get HTTP headers for API requests."""
@@ -128,6 +132,7 @@ class AzureDocumentIntelligenceClient:
                     # Store the complete operation location URL for polling
                     # We should use this exact URL for polling, not construct our own
                     logger.debug(f"Will use Operation-Location URL for polling: {operation_location}")
+                    self.last_operation_location = operation_location
                     return True, operation_location
                 else:
                     error_msg = "No Operation-Location header in response"
@@ -216,9 +221,87 @@ class AzureDocumentIntelligenceClient:
         except Exception as e:
             return False, {"error": f"Unexpected error: {str(e)}"}
     
+    @staticmethod
+    def _split_operation_location(operation_location: str) -> Tuple[str, str]:
+        """Split an Operation-Location URL into its base (no query) and query string.
+
+        The base looks like
+        ``{endpoint}/documentintelligence/documentModels/{modelId}/analyzeResults/{resultId}``
+        which is the prefix used to fetch generated artifacts (pdf, figures).
+        """
+        if '?' in operation_location:
+            base, query = operation_location.split('?', 1)
+        else:
+            base, query = operation_location, f"api-version={AZURE_DI_API_VERSION}"
+        return base.rstrip('/'), query
+
+    def get_pdf_result(self, operation_location: str) -> Tuple[bool, Union[bytes, Dict[str, Any]]]:
+        """Retrieve the generated searchable PDF for a completed analysis.
+
+        Only available when the analyze request was made with ``output=pdf``
+        (Read model). Returns the raw PDF bytes on success.
+        """
+        try:
+            base, query = self._split_operation_location(operation_location)
+            url = f"{base}/pdf?{query}"
+            headers = {
+                "Ocp-Apim-Subscription-Key": self.api_key,
+                "Accept": "application/pdf"
+            }
+
+            logger.debug(f"Fetching searchable PDF: {url}")
+            response = requests.get(url, headers=headers, timeout=60)
+
+            if response.status_code == 200:
+                return True, response.content
+            else:
+                logger.error(f"PDF retrieval failed with status {response.status_code}: {response.text}")
+                try:
+                    return False, response.json()
+                except Exception:
+                    return False, {"error": f"HTTP {response.status_code}: {response.text}"}
+        except requests.exceptions.RequestException as e:
+            logger.error(f"PDF retrieval network error: {str(e)}")
+            return False, {"error": f"Network error retrieving PDF: {str(e)}"}
+        except Exception as e:
+            logger.error(f"PDF retrieval unexpected error: {str(e)}")
+            return False, {"error": f"Unexpected error retrieving PDF: {str(e)}"}
+
+    def get_figure(self, operation_location: str, figure_id: str) -> Tuple[bool, Union[bytes, Dict[str, Any]]]:
+        """Retrieve a detected figure image for a completed analysis.
+
+        Only available when the analyze request was made with ``output=figures``
+        (Layout model). Returns the raw image bytes on success.
+        """
+        try:
+            base, query = self._split_operation_location(operation_location)
+            url = f"{base}/figures/{figure_id}?{query}"
+            headers = {
+                "Ocp-Apim-Subscription-Key": self.api_key,
+                "Accept": "image/png"
+            }
+
+            logger.debug(f"Fetching figure '{figure_id}': {url}")
+            response = requests.get(url, headers=headers, timeout=60)
+
+            if response.status_code == 200:
+                return True, response.content
+            else:
+                logger.error(f"Figure retrieval failed with status {response.status_code}: {response.text}")
+                try:
+                    return False, response.json()
+                except Exception:
+                    return False, {"error": f"HTTP {response.status_code}: {response.text}"}
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Figure retrieval network error: {str(e)}")
+            return False, {"error": f"Network error retrieving figure: {str(e)}"}
+        except Exception as e:
+            logger.error(f"Figure retrieval unexpected error: {str(e)}")
+            return False, {"error": f"Unexpected error retrieving figure: {str(e)}"}
+
     def analyze_document_with_polling(
-        self, 
-        model_id: str, 
+        self,
+        model_id: str,
         document_data: bytes,
         progress_callback=None,
         **kwargs
@@ -277,7 +360,190 @@ class AzureDocumentIntelligenceClient:
                 attempt += 1
         
         return False, {"error": "Analysis timed out after 2 minutes"}
-    
+
+    def delete_analyze_result(self, operation_location: str) -> Tuple[bool, str]:
+        """Delete the stored analyze response early (GDPR / privacy).
+
+        Analyze responses are otherwise retained for 24 hours. Deletes the
+        result identified by the analyze Operation-Location URL.
+        """
+        try:
+            base, query = self._split_operation_location(operation_location)
+            url = f"{base}?{query}"
+            headers = {"Ocp-Apim-Subscription-Key": self.api_key}
+
+            logger.debug(f"Deleting analyze result: {url}")
+            response = requests.delete(url, headers=headers, timeout=30)
+
+            if response.status_code in (200, 204):
+                return True, "Analyze result deleted."
+            return False, f"Delete failed (HTTP {response.status_code}): {response.text}"
+        except requests.exceptions.RequestException as e:
+            return False, f"Network error deleting result: {str(e)}"
+        except Exception as e:
+            return False, f"Unexpected error deleting result: {str(e)}"
+
+    def _build_batch_url(self, model_id: str, **params) -> str:
+        """Build the analyzeBatch URL with optional analysis query parameters."""
+        base_url = f"{self.base_url}/documentModels/{model_id}:analyzeBatch"
+        query_params = [f"api-version={self.api_version}"]
+
+        for param, value in params.items():
+            if value:
+                if isinstance(value, list):
+                    query_params.append(f"{param}={','.join(value)}")
+                else:
+                    query_params.append(f"{param}={value}")
+
+        return f"{base_url}?{'&'.join(query_params)}"
+
+    def analyze_batch_sync(
+        self,
+        model_id: str,
+        container_url: str,
+        result_container_url: str,
+        prefix: str = "",
+        result_prefix: str = "",
+        overwrite_existing: bool = True,
+        **kwargs
+    ) -> Tuple[bool, Union[str, Dict[str, Any]]]:
+        """Start a batch analysis over documents in an Azure Blob container.
+
+        Args:
+            model_id: Azure DI model ID.
+            container_url: Source blob container SAS URL (read+list).
+            result_container_url: Destination blob container SAS URL (write+list).
+            prefix: Optional blob name prefix to filter the source documents.
+            result_prefix: Optional prefix for result blobs.
+            overwrite_existing: Overwrite existing result blobs.
+            **kwargs: Optional analysis query parameters (pages, features, etc.).
+
+        Returns:
+            Tuple of (success, operation_location URL or error dict).
+        """
+        try:
+            url = self._build_batch_url(model_id, **kwargs)
+
+            azure_blob_source = {"containerUrl": container_url}
+            if prefix:
+                azure_blob_source["prefix"] = prefix
+
+            body: Dict[str, Any] = {
+                "azureBlobSource": azure_blob_source,
+                "resultContainerUrl": result_container_url,
+                "overwriteExisting": overwrite_existing,
+            }
+            if result_prefix:
+                body["resultPrefix"] = result_prefix
+
+            headers = self._get_headers("application/json")
+            logger.debug(f"Batch analyze URL: {url}")
+            logger.debug(f"Batch body (containers redacted): model={model_id}, prefix='{prefix}', result_prefix='{result_prefix}'")
+
+            response = requests.post(url, headers=headers, json=body, timeout=60)
+            logger.debug(f"Batch submit status: {response.status_code}")
+
+            if response.status_code == 202:
+                operation_location = response.headers.get('Operation-Location')
+                if operation_location:
+                    return True, operation_location
+                return False, {"error": "No Operation-Location header in batch response"}
+            else:
+                try:
+                    return False, response.json()
+                except Exception:
+                    return False, {"error": f"HTTP {response.status_code}: {response.text}"}
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Batch submit network error: {str(e)}")
+            return False, {"error": f"Network error starting batch: {str(e)}"}
+        except Exception as e:
+            logger.error(f"Batch submit unexpected error: {str(e)}")
+            return False, {"error": f"Unexpected error starting batch: {str(e)}"}
+
+    def analyze_batch_with_polling(
+        self,
+        model_id: str,
+        container_url: str,
+        result_container_url: str,
+        prefix: str = "",
+        result_prefix: str = "",
+        overwrite_existing: bool = True,
+        progress_callback=None,
+        max_attempts: int = 600,
+        **kwargs
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """Start a batch analysis and poll until completion.
+
+        Batch jobs can take much longer than single documents, so this polls
+        with a longer ceiling (default ~10 minutes at 1s intervals).
+        """
+        success, result = self.analyze_batch_sync(
+            model_id, container_url, result_container_url,
+            prefix=prefix, result_prefix=result_prefix,
+            overwrite_existing=overwrite_existing, **kwargs
+        )
+        if not success:
+            return False, result
+
+        operation_location = result
+        if progress_callback:
+            progress_callback("Batch job submitted, waiting for results...")
+
+        attempt = 0
+        while attempt < max_attempts:
+            ok, poll = self.get_analysis_result_sync(operation_location)
+            if not ok:
+                return False, poll
+
+            status = poll.get('status', '').lower()
+            # The overall batch job terminates as 'completed' (or 'succeeded' in some responses).
+            if status in ('succeeded', 'completed'):
+                if progress_callback:
+                    progress_callback("Batch analysis completed!")
+                return True, poll
+            elif status == 'failed':
+                return False, {"error": f"Batch analysis failed: {poll.get('error', {})}"}
+            else:
+                if progress_callback:
+                    percent = poll.get('percentCompleted')
+                    suffix = f" ({percent}%)" if percent is not None else f" ({attempt + 1})"
+                    progress_callback(f"Batch in progress...{suffix}")
+                time.sleep(1)
+                attempt += 1
+
+        return False, {"error": "Batch analysis timed out"}
+
+    def list_batch_results(self, model_id: str) -> Tuple[bool, Dict[str, Any]]:
+        """List batch analysis jobs from the past seven days for a model."""
+        try:
+            url = f"{self.base_url}/documentModels/{model_id}/analyzeBatchResults?api-version={self.api_version}"
+            headers = {"Ocp-Apim-Subscription-Key": self.api_key}
+            response = requests.get(url, headers=headers, timeout=30)
+            if response.status_code == 200:
+                return True, response.json()
+            try:
+                return False, response.json()
+            except Exception:
+                return False, {"error": f"HTTP {response.status_code}: {response.text}"}
+        except requests.exceptions.RequestException as e:
+            return False, {"error": f"Network error listing batch jobs: {str(e)}"}
+        except Exception as e:
+            return False, {"error": f"Unexpected error listing batch jobs: {str(e)}"}
+
+    def delete_batch_result(self, model_id: str, result_id: str) -> Tuple[bool, str]:
+        """Delete a batch analysis job result (GDPR / privacy compliance)."""
+        try:
+            url = f"{self.base_url}/documentModels/{model_id}/analyzeBatchResults/{result_id}?api-version={self.api_version}"
+            headers = {"Ocp-Apim-Subscription-Key": self.api_key}
+            response = requests.delete(url, headers=headers, timeout=30)
+            if response.status_code in (200, 204):
+                return True, f"Batch job '{result_id}' deleted."
+            return False, f"Delete failed (HTTP {response.status_code}): {response.text}"
+        except requests.exceptions.RequestException as e:
+            return False, f"Network error deleting batch job: {str(e)}"
+        except Exception as e:
+            return False, f"Unexpected error deleting batch job: {str(e)}"
+
     def get_model_info(self, model_id: str) -> Tuple[bool, Dict[str, Any]]:
         """
         Get information about a specific model.
@@ -399,23 +665,36 @@ class DocumentAnalysisResult:
         return self.analyze_result.get('content', '')
     
     def get_formatted_fields(self) -> Dict[str, Any]:
-        """Get formatted fields for display."""
+        """Get formatted fields for display.
+
+        A single analysis can return multiple documents of the same docType
+        (e.g. multi-copy tax extraction returns several W-2s). Label each copy
+        uniquely so later copies don't overwrite earlier ones.
+        """
         formatted_fields = {}
-        
+
         documents = self.get_documents()
+        doc_type_counts = Counter(doc.get('docType', 'unknown') for doc in documents)
+        seen_counts = {}
+
         for doc in documents:
             doc_type = doc.get('docType', 'unknown')
+            if doc_type_counts[doc_type] > 1:
+                seen_counts[doc_type] = seen_counts.get(doc_type, 0) + 1
+                label = f"{doc_type} #{seen_counts[doc_type]}"
+            else:
+                label = doc_type
             fields = doc.get('fields', {})
-            
-            formatted_fields[doc_type] = {}
+
+            formatted_fields[label] = {}
             for field_name, field_data in fields.items():
-                formatted_fields[doc_type][field_name] = {
+                formatted_fields[label][field_name] = {
                     'content': field_data.get('content', field_data.get('valueString', field_data.get('value', ''))),
                     'confidence': field_data.get('confidence', 0),
                     'boundingRegions': field_data.get('boundingRegions', []),
                     'type': field_data.get('type', 'string')
                 }
-        
+
         return formatted_fields
     
     def to_markdown(self) -> str:
