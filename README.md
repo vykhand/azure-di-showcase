@@ -9,7 +9,7 @@ A comprehensive Streamlit application that showcases all Azure Document Intellig
   - Core models: Read OCR, Layout Analysis
   - Document types: Receipts, Invoices, Business Cards, ID Documents
   - Financial documents: Bank Checks, Statements, Pay Stubs
-  - US Tax documents: W-2, W-4, 1040, 1098, 1099, 1095
+  - US Tax documents: W-2, W-4, 1040, 1098, 1099, 1099-SSA, 1095-A, 1095-C
   - US Mortgage documents: 1003, 1004, 1005, 1008, Closing Disclosure
   - Healthcare: US Health Insurance Cards
 
@@ -43,6 +43,11 @@ A comprehensive Streamlit application that showcases all Azure Document Intellig
 - **Copy to Clipboard**: One-click copy of JSON results
 
 ### 🔧 Advanced Features
+- **Query Fields**: extract custom, ad-hoc fields from any supported model with no training (add-on; not available on tax W-2/1098/1099)
+- **Searchable PDF**: download a text-embedded PDF from the Read model (`output=pdf`)
+- **Figure Extraction**: download detected figures as images from the Layout model (`output=figures`)
+- **Batch Analysis**: analyze a whole Azure Blob container in one job, with a recent-jobs list and delete
+- **Privacy**: delete a stored analyze response early (otherwise retained 24h)
 - Real-time progress indicators
 - Comprehensive error handling
 - Connection status monitoring
@@ -134,7 +139,7 @@ A comprehensive Streamlit application that showcases all Azure Document Intellig
 | **Financial** | Bank Check, Bank Statement, Pay Stub, Credit Card | Financial document processing |
 | **Legal** | Marriage Certificate | Legal document extraction |
 | **Healthcare** | US Health Insurance Card | Healthcare document processing |
-| **US Tax** | W-2, W-4, 1040, 1098, 1099, 1095 | Tax form processing |
+| **US Tax** | W-2, W-4, 1040, 1098, 1099, 1099-SSA, 1095-A, 1095-C | Tax form processing |
 | **US Mortgage** | 1003, 1004, 1005, 1008, Closing Disclosure | Mortgage document processing |
 
 ## Architecture
@@ -173,7 +178,8 @@ Each model supports different features that can be toggled:
 - **Locale**: Language hints (en-US, fr-FR, de-DE, etc.)
 - **String Index Type**: Text element indexing method
 - **Output Content Format**: Text or Markdown output
-- **Additional Output**: PDF, figures, cropped images
+- **Additional Output**: Searchable PDF (Read model) and figure images (Layout model)
+- **Query Fields**: comma-separated custom field names to extract (max 20)
 
 ## Troubleshooting
 
@@ -232,10 +238,11 @@ See [LOGGING.md](LOGGING.md) for complete documentation.
 ## Future Enhancements
 
 - **Auto Mode**: Intelligent model selection using LLM analysis
-- **Batch Processing**: Multiple document analysis
-- **Custom Models**: Support for custom trained models
-- **Enhanced Visualization**: Interactive bounding box highlighting
+- **Custom Models**: Support for custom trained and classification models
+- **Enhanced Visualization**: Render barcodes, formulas, and selection marks as bounding boxes
 - **Export Options**: Additional output formats (Excel, CSV)
+
+> ✅ **Batch Processing** is now implemented — see the **Batch Analysis** tab.
 
 ## Contributing
 

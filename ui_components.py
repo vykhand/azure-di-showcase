@@ -9,8 +9,9 @@ import json
 
 from config import (
     AZURE_DI_MODELS, API_PARAMETERS, AVAILABLE_FEATURES, OUTPUT_OPTIONS,
-    MODEL_CATEGORIES, get_model_features, get_models_by_category,
-    is_feature_available, get_model_display_name
+    MODEL_CATEGORIES, QUERY_FIELDS_MAX, get_model_features, get_models_by_category,
+    is_feature_available, get_model_display_name,
+    get_output_options_for_model, supports_query_fields
 )
 
 
@@ -178,26 +179,77 @@ class ParameterConfiguration:
         return selected_features
     
     @staticmethod
-    def render_output_options() -> List[str]:
+    def render_output_options(model_id: str) -> List[str]:
         """
-        Render additional output options.
-        
+        Render additional output options valid for the selected model.
+
+        Args:
+            model_id: Selected model ID
+
         Returns:
             List of selected output options
         """
+        available_outputs = get_output_options_for_model(model_id)
+        if not available_outputs:
+            return []
+
         st.sidebar.header("📤 Additional Output")
-        
+
         selected_outputs = []
-        
-        for output_key, output_info in OUTPUT_OPTIONS.items():
+
+        for output_key, output_info in available_outputs.items():
             is_selected = st.sidebar.checkbox(
                 output_info["label"],
-                help=output_info["description"]
+                help=output_info["description"],
+                key=f"output_{output_key}"
             )
             if is_selected:
                 selected_outputs.append(output_key)
-        
+
         return selected_outputs
+
+    @staticmethod
+    def render_query_fields(model_id: str) -> List[str]:
+        """
+        Render the query fields add-on input for the selected model.
+
+        Args:
+            model_id: Selected model ID
+
+        Returns:
+            List of query field names (empty if unused or unsupported)
+        """
+        if not supports_query_fields(model_id):
+            return []
+
+        st.sidebar.header("🔎 Query Fields")
+
+        raw = st.sidebar.text_input(
+            "Custom fields to extract",
+            value="",
+            placeholder="e.g., InvoiceNumber, BillingAddress",
+            help=(
+                "Add-on capability: comma-separated field names to extract beyond the "
+                f"model's schema (max {QUERY_FIELDS_MAX}). Use camelCase or PascalCase for "
+                "multi-word names. Premium add-on; not supported on tax W-2/1098/1099."
+            )
+        )
+
+        # Parse, trim, drop blanks, de-duplicate while preserving order.
+        fields = []
+        for name in raw.split(","):
+            name = name.strip()
+            if name and name not in fields:
+                fields.append(name)
+
+        if len(fields) > QUERY_FIELDS_MAX:
+            st.sidebar.warning(
+                f"Only the first {QUERY_FIELDS_MAX} query fields are sent; "
+                f"{len(fields) - QUERY_FIELDS_MAX} extra ignored."
+            )
+            fields = fields[:QUERY_FIELDS_MAX]
+
+        return fields
 
 
 class FileUploadSection:

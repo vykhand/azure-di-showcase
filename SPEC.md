@@ -45,8 +45,10 @@ The application must support all Azure Document Intelligence 4.0 prebuilt models
 - `prebuilt-tax.us.w4` - W-4 tax forms
 - `prebuilt-tax.us.1040` - 1040 tax forms
 - `prebuilt-tax.us.1098` - 1098 tax forms
-- `prebuilt-tax.us.1099` - 1099 tax forms
-- `prebuilt-tax.us.1095` - 1095 tax forms
+- `prebuilt-tax.us.1099` - 1099 tax forms (base form and variations)
+- `prebuilt-tax.us.1099SSA` - 1099-SSA Social Security benefit statements
+- `prebuilt-tax.us.1095A` - 1095-A Health Insurance Marketplace statements
+- `prebuilt-tax.us.1095C` - 1095-C employer-provided health insurance forms
 
 **US Mortgage Documents:**
 - `prebuilt-mortgage.us.1003` - Uniform Residential Loan Application
@@ -77,11 +79,13 @@ For each selected model, the sidebar must dynamically generate UI controls for a
   - styleFont (layout model)
   - queryFields
 
-**Output Options:**
+**Output Options:** (the API `output` parameter only accepts `pdf` and `figures`, each valid for specific models)
 - `output` (multiselect) - Additional outputs:
-  - pdf
-  - figures
-  - cropped
+  - pdf — searchable PDF, Read model only; retrieved via `analyzeResults/{resultId}/pdf`
+  - figures — figure images, Layout model only; retrieved via `analyzeResults/{resultId}/figures/{figureId}`
+
+**Query Fields:** (add-on; supported by Layout and prebuilt models except tax W-2/1098/1099)
+- `queryFields` (text input) — comma-separated custom field names (max 20); also sets `features=queryFields`
 
 ### 2. Document Upload and Processing
 
@@ -222,8 +226,14 @@ class AzureDocumentIntelligenceClient:
 
 #### 6.2 API Endpoints
 - **Analyze Document**: `POST {endpoint}/documentintelligence/documentModels/{modelId}:analyze`
-- **Get Result**: `GET {endpoint}/documentintelligence/documentModels/operations/{operationId}`
+- **Get Result**: `GET {endpoint}/documentintelligence/documentModels/{modelId}/analyzeResults/{resultId}`
+- **Delete Result** (GDPR): `DELETE {endpoint}/documentintelligence/documentModels/{modelId}/analyzeResults/{resultId}`
+- **Searchable PDF**: `GET .../analyzeResults/{resultId}/pdf`
+- **Figure image**: `GET .../analyzeResults/{resultId}/figures/{figureId}`
 - **List Models**: `GET {endpoint}/documentintelligence/documentModels`
+- **Batch Analyze**: `POST {endpoint}/documentintelligence/documentModels/{modelId}:analyzeBatch` (body: `azureBlobSource`, `resultContainerUrl`, `resultPrefix`, `overwriteExisting`)
+- **List Batch Jobs** (past 7 days): `GET .../documentModels/{modelId}/analyzeBatchResults`
+- **Delete Batch Job**: `DELETE .../documentModels/{modelId}/analyzeBatchResults/{resultId}`
 
 #### 6.3 Error Handling
 - **Authentication Errors**: Invalid API key handling

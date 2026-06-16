@@ -98,6 +98,14 @@ def initialize_session_state():
         st.session_state.current_file_id = None
     if 'current_page_idx' not in st.session_state:
         st.session_state.current_page_idx = 0
+    if 'searchable_pdf' not in st.session_state:
+        st.session_state.searchable_pdf = None
+    if 'extracted_figures' not in st.session_state:
+        st.session_state.extracted_figures = {}
+    if 'batch_result' not in st.session_state:
+        st.session_state.batch_result = None
+    if 'operation_location' not in st.session_state:
+        st.session_state.operation_location = None
 
 
 def create_azure_client() -> Optional[AzureDocumentIntelligenceClient]:
@@ -171,6 +179,43 @@ def render_main_header():
     )
 
 
+def fetch_output_artifacts(client: AzureDocumentIntelligenceClient, analysis: DocumentAnalysisResult, requested_output):
+    """Fetch generated artifacts (searchable PDF, figure images) into session state.
+
+    Args:
+        client: Azure DI client (holds the last Operation-Location).
+        analysis: Parsed analysis result.
+        requested_output: List of output options requested (e.g. ['pdf', 'figures']).
+    """
+    # Always reset so stale artifacts from a previous run aren't shown.
+    st.session_state.searchable_pdf = None
+    st.session_state.extracted_figures = {}
+
+    requested_output = requested_output or []
+    operation_location = getattr(client, 'last_operation_location', None)
+    if not operation_location:
+        return
+
+    if 'pdf' in requested_output:
+        ok, pdf = client.get_pdf_result(operation_location)
+        if ok:
+            st.session_state.searchable_pdf = pdf
+        else:
+            logger.warning(f"Could not retrieve searchable PDF: {pdf}")
+
+    if 'figures' in requested_output:
+        figures = analysis.analyze_result.get('figures', [])
+        for figure in figures:
+            figure_id = figure.get('id')
+            if not figure_id:
+                continue
+            ok, image = client.get_figure(operation_location, figure_id)
+            if ok:
+                st.session_state.extracted_figures[figure_id] = image
+            else:
+                logger.warning(f"Could not retrieve figure '{figure_id}': {image}")
+
+
 def handle_document_analysis(client: AzureDocumentIntelligenceClient, model_id: str, file_data: bytes, params: Dict[str, Any]):
     """
     Handle document analysis process.
@@ -215,11 +260,15 @@ def handle_document_analysis(client: AzureDocumentIntelligenceClient, model_id: 
         st.session_state.raw_result = result
         st.session_state.analysis_result = result
         st.session_state.analysis_params = filtered_params  # Store the analysis parameters
+        st.session_state.operation_location = getattr(client, 'last_operation_location', None)
         status_placeholder.success("✅ Document analysis completed successfully!")
-        
+
         try:
             # Create analysis result object for easier data access
             analysis = DocumentAnalysisResult(result)
+
+            # Retrieve generated artifacts (searchable PDF, figures) when requested.
+            fetch_output_artifacts(client, analysis, filtered_params.get('output', []))
             
             # Display summary stats
             col1, col2, col3, col4 = st.columns(4)
@@ -258,6 +307,9 @@ def handle_document_analysis(client: AzureDocumentIntelligenceClient, model_id: 
         st.session_state.analysis_result = None
         st.session_state.raw_result = None
         st.session_state.analysis_params = None
+        st.session_state.searchable_pdf = None
+        st.session_state.extracted_figures = {}
+        st.session_state.operation_location = None
         
         # Show detailed debugging information
         st.subheader("🔍 Debugging Information")
@@ -746,18 +798,296 @@ def render_document_preview(uploaded_file, file_source: str):
         st.error(f"Error generating document preview: {str(e)}")
 
 
-def render_analysis_results():
+def render_analysis_results(client=None):
     """Render analysis results section."""
     if not st.session_state.analysis_result:
         return
     
     st.header("📊 Analysis Results")
-    
+
+    # Generated artifacts (searchable PDF / figures), when requested and available.
+    render_output_artifacts()
+
     # Results display with tabs
     ResultsDisplay.render_results_tabs(
         st.session_state.analysis_result,
         st.session_state.raw_result or st.session_state.analysis_result
     )
+
+    # GDPR / privacy: delete the stored analyze response early (otherwise kept 24h).
+    operation_location = st.session_state.get('operation_location')
+    if client and operation_location:
+        with st.expander("🗑️ Privacy: delete stored response", expanded=False):
+            st.caption(
+                "Analyze responses are retained by Azure for 24 hours. "
+                "Delete the stored response now if you don't need to re-fetch it."
+            )
+            if st.button("Delete analyze result", key="delete_analyze_result"):
+                ok, msg = client.delete_analyze_result(operation_location)
+                if ok:
+                    st.session_state.operation_location = None
+                    st.success(msg)
+                else:
+                    st.error(msg)
+
+
+def render_output_artifacts():
+    """Render download buttons and previews for generated artifacts."""
+    pdf_bytes = st.session_state.get('searchable_pdf')
+    figures = st.session_state.get('extracted_figures') or {}
+
+    if not pdf_bytes and not figures:
+        return
+
+    st.subheader("📦 Generated Output")
+
+    if pdf_bytes:
+        st.download_button(
+            label="💾 Download Searchable PDF",
+            data=pdf_bytes,
+            file_name="searchable.pdf",
+            mime="application/pdf",
+            key="download_searchable_pdf"
+        )
+
+    if figures:
+        st.write(f"**Extracted Figures ({len(figures)})**")
+        figure_items = list(figures.items())
+        cols = st.columns(min(3, len(figure_items)))
+        for idx, (figure_id, image_bytes) in enumerate(figure_items):
+            with cols[idx % len(cols)]:
+                st.image(image_bytes, caption=f"Figure {figure_id}")
+                st.download_button(
+                    label="💾 Download",
+                    data=image_bytes,
+                    file_name=f"figure_{figure_id}.png",
+                    mime="image/png",
+                    key=f"download_figure_{figure_id}"
+                )
+
+
+
+def render_single_document_tab(client, selected_model, all_params):
+    """Render the single-document upload, preview, and results workflow."""
+    # Main content area
+    col1, col2 = st.columns([2, 3])
+
+    with col1:
+        # File upload section
+        uploaded_file, file_source = FileUploadSection.render_upload_section()
+
+        # Clear state when no file is uploaded
+        if not uploaded_file:
+            if st.session_state.get('current_file_id') is not None:
+                # File was removed - clear analysis
+                st.session_state.analysis_result = None
+                st.session_state.raw_result = None
+                st.session_state.analysis_params = None
+                st.session_state.document_images = None
+                st.session_state.current_page_idx = 0
+                st.session_state.current_file_id = None
+                st.session_state.uploaded_file = None
+
+        if uploaded_file:
+            # Check if this is a different document than before
+            current_file_id = None
+            if hasattr(uploaded_file, 'name') and hasattr(uploaded_file, 'getvalue'):
+                # For file uploads, use name + size as identifier
+                try:
+                    file_size = len(uploaded_file.getvalue())
+                    current_file_id = f"{uploaded_file.name}_{file_size}_{file_source}"
+                except:
+                    current_file_id = f"{uploaded_file.name}_{file_source}"
+            elif hasattr(uploaded_file, 'name'):
+                # For URL/sample docs, use the name + source
+                current_file_id = f"{uploaded_file.name}_{file_source}"
+            else:
+                # Fallback identifier
+                current_file_id = f"unknown_{file_source}"
+
+            # Clear analysis results if document changed
+            if 'current_file_id' not in st.session_state:
+                st.session_state.current_file_id = None
+
+            if current_file_id != st.session_state.current_file_id:
+                # Document changed - clear previous analysis
+                st.session_state.analysis_result = None
+                st.session_state.raw_result = None
+                st.session_state.analysis_params = None
+                st.session_state.document_images = None
+                st.session_state.current_page_idx = 0  # Reset to first page
+                st.session_state.current_file_id = current_file_id
+
+            # Validate file
+            is_valid, validation_msg = DocumentProcessor.validate_file(uploaded_file)
+
+            if is_valid:
+                st.success(f"✅ {validation_msg}")
+
+                # Store file in session state
+                st.session_state.uploaded_file = uploaded_file
+
+                # Analysis button
+                if st.button("🚀 Analyze Document", type="primary", use_container_width=True):
+                    try:
+                        # Get file data with proper handling
+                        if hasattr(uploaded_file, 'read'):
+                            uploaded_file.seek(0)  # Reset file pointer
+                            file_data = uploaded_file.read()
+                        elif hasattr(uploaded_file, 'getvalue'):
+                            file_data = uploaded_file.getvalue()
+                        else:
+                            st.error("Unable to read file data for analysis")
+                            st.stop()
+
+                        # Validate file data before analysis
+                        if not file_data or len(file_data) == 0:
+                            st.error("File data is empty. Please try uploading the file again.")
+                            st.stop()
+
+                        handle_document_analysis(client, selected_model, file_data, all_params)
+
+                    except Exception as e:
+                        st.error(f"Error preparing file for analysis: {str(e)}")
+                        st.info("💡 **Tip**: Try re-uploading the file or use a different document.")
+            else:
+                st.error(f"❌ {validation_msg}")
+
+    with col2:
+        # Document preview
+        if st.session_state.uploaded_file:
+            render_document_preview(st.session_state.uploaded_file, file_source or 'upload')
+
+    # Analysis results (full width)
+    render_analysis_results(client)
+
+
+def render_batch_analysis_tab(client, selected_model, all_params):
+    """Render the batch analysis workflow over an Azure Blob container."""
+    st.header("🗂️ Batch Analysis")
+    st.caption(
+        f"Analyze every document in an Azure Blob container with **{selected_model}** "
+        "in a single job. Results are written to your result container as JSON "
+        "(plus any requested PDF/figures)."
+    )
+    st.info(
+        "ℹ️ Provide **SAS URLs** with the right permissions: the source container needs "
+        "**Read + List**, the result container needs **Write + List**. The current sidebar "
+        "model and parameters are applied to the whole batch."
+    )
+
+    with st.form("batch_form"):
+        container_url = st.text_input(
+            "Source container SAS URL",
+            placeholder="https://acct.blob.core.windows.net/source?sv=...&sig=...",
+            help="Blob container holding the documents to analyze (Read + List)."
+        )
+        prefix = st.text_input(
+            "Source prefix (optional)",
+            placeholder="invoices/2025/",
+            help="Only analyze blobs whose names start with this prefix."
+        )
+        result_container_url = st.text_input(
+            "Result container SAS URL",
+            placeholder="https://acct.blob.core.windows.net/results?sv=...&sig=...",
+            help="Destination container for result JSON (Write + List)."
+        )
+        result_prefix = st.text_input(
+            "Result prefix (optional)",
+            placeholder="output/",
+            help="Prefix for result blobs. Required if results share the source container."
+        )
+        overwrite_existing = st.checkbox("Overwrite existing result blobs", value=True)
+        submitted = st.form_submit_button("🚀 Run Batch Analysis", type="primary")
+
+    if submitted:
+        if not container_url or not result_container_url:
+            st.error("Both the source and result container SAS URLs are required.")
+        else:
+            # Reuse the sidebar analysis parameters, dropping empties.
+            batch_kwargs = {k: v for k, v in all_params.items() if v}
+            progress = st.empty()
+
+            def progress_callback(message: str):
+                progress.info(f"⏳ {message}")
+
+            with st.spinner("Running batch analysis..."):
+                ok, result = client.analyze_batch_with_polling(
+                    model_id=selected_model,
+                    container_url=container_url,
+                    result_container_url=result_container_url,
+                    prefix=prefix,
+                    result_prefix=result_prefix,
+                    overwrite_existing=overwrite_existing,
+                    progress_callback=progress_callback,
+                    **batch_kwargs
+                )
+            progress.empty()
+
+            if ok:
+                st.session_state.batch_result = result
+                st.success("✅ Batch analysis completed!")
+            else:
+                st.session_state.batch_result = None
+                error_msg = result.get('error', result) if isinstance(result, dict) else result
+                st.error(f"❌ Batch analysis failed: {error_msg}")
+                with st.expander("View error details", expanded=True):
+                    st.json(result)
+
+    # Show the most recent batch result.
+    if st.session_state.get('batch_result'):
+        render_batch_result(st.session_state.batch_result)
+
+    # Recent batch jobs (past 7 days) with delete.
+    render_batch_jobs(client, selected_model)
+
+
+def render_batch_result(result):
+    """Render the summary and per-file details of a completed batch job."""
+    batch = result.get('result', {}) if isinstance(result, dict) else {}
+    details = batch.get('details', [])
+
+    st.subheader("📦 Batch Result")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Succeeded", batch.get('succeededCount', 0))
+    col2.metric("Failed", batch.get('failedCount', 0))
+    col3.metric("Skipped", batch.get('skippedCount', 0))
+
+    if details:
+        rows = [
+            {
+                "Source": d.get('sourceUrl', '').split('?')[0],
+                "Status": d.get('status', ''),
+                "Result": d.get('resultUrl', '').split('?')[0],
+            }
+            for d in details
+        ]
+        st.dataframe(rows, use_container_width=True)
+
+
+def render_batch_jobs(client, selected_model):
+    """List batch jobs from the past seven days and allow deletion."""
+    with st.expander("🕘 Recent batch jobs (past 7 days)", expanded=False):
+        if st.button("Refresh batch job list", key="refresh_batch_jobs"):
+            ok, result = client.list_batch_results(selected_model)
+            if ok:
+                st.session_state.batch_jobs = result.get('value', result)
+            else:
+                st.error(f"Could not list batch jobs: {result}")
+
+        jobs = st.session_state.get('batch_jobs')
+        if jobs:
+            for job in jobs:
+                result_id = job.get('resultId') or job.get('operationId') or ''
+                status = job.get('status', 'unknown')
+                col1, col2 = st.columns([4, 1])
+                col1.write(f"`{result_id}` — {status}")
+                if result_id and col2.button("Delete", key=f"del_batch_{result_id}"):
+                    ok, msg = client.delete_batch_result(selected_model, result_id)
+                    if ok:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
 
 
 def main():
@@ -791,10 +1121,17 @@ def main():
         # Parameter configuration
         basic_params = ParameterConfiguration.render_basic_parameters()
         selected_features = ParameterConfiguration.render_features_selection(selected_model)
-        output_options = ParameterConfiguration.render_output_options()
-        
+        output_options = ParameterConfiguration.render_output_options(selected_model)
+        query_fields = ParameterConfiguration.render_query_fields(selected_model)
+
         # Combine all parameters
         all_params = basic_params.copy()
+        if query_fields:
+            # queryFields requires both the feature flag and the field list.
+            selected_features = list(selected_features)
+            if 'queryFields' not in selected_features:
+                selected_features.append('queryFields')
+            all_params['queryFields'] = query_fields
         if selected_features:
             all_params['features'] = selected_features
         if output_options:
@@ -803,100 +1140,18 @@ def main():
         # Auto mode placeholder
         render_auto_mode_placeholder()
         
-        # Main content area
-        col1, col2 = st.columns([2, 3])
-        
-        with col1:
-            # File upload section
-            uploaded_file, file_source = FileUploadSection.render_upload_section()
-            
-            # Clear state when no file is uploaded
-            if not uploaded_file:
-                if st.session_state.get('current_file_id') is not None:
-                    # File was removed - clear analysis
-                    st.session_state.analysis_result = None
-                    st.session_state.raw_result = None
-                    st.session_state.analysis_params = None
-                    st.session_state.document_images = None
-                    st.session_state.current_page_idx = 0
-                    st.session_state.current_file_id = None
-                    st.session_state.uploaded_file = None
-            
-            if uploaded_file:
-                # Check if this is a different document than before
-                current_file_id = None
-                if hasattr(uploaded_file, 'name') and hasattr(uploaded_file, 'getvalue'):
-                    # For file uploads, use name + size as identifier
-                    try:
-                        file_size = len(uploaded_file.getvalue())
-                        current_file_id = f"{uploaded_file.name}_{file_size}_{file_source}"
-                    except:
-                        current_file_id = f"{uploaded_file.name}_{file_source}"
-                elif hasattr(uploaded_file, 'name'):
-                    # For URL/sample docs, use the name + source
-                    current_file_id = f"{uploaded_file.name}_{file_source}"
-                else:
-                    # Fallback identifier
-                    current_file_id = f"unknown_{file_source}"
-                
-                # Clear analysis results if document changed
-                if 'current_file_id' not in st.session_state:
-                    st.session_state.current_file_id = None
-                    
-                if current_file_id != st.session_state.current_file_id:
-                    # Document changed - clear previous analysis
-                    st.session_state.analysis_result = None
-                    st.session_state.raw_result = None
-                    st.session_state.analysis_params = None
-                    st.session_state.document_images = None
-                    st.session_state.current_page_idx = 0  # Reset to first page
-                    st.session_state.current_file_id = current_file_id
-                
-                # Validate file
-                is_valid, validation_msg = DocumentProcessor.validate_file(uploaded_file)
-                
-                if is_valid:
-                    st.success(f"✅ {validation_msg}")
-                    
-                    # Store file in session state
-                    st.session_state.uploaded_file = uploaded_file
-                    
-                    # Analysis button
-                    if st.button("🚀 Analyze Document", type="primary", use_container_width=True):
-                        try:
-                            # Get file data with proper handling
-                            if hasattr(uploaded_file, 'read'):
-                                uploaded_file.seek(0)  # Reset file pointer
-                                file_data = uploaded_file.read()
-                            elif hasattr(uploaded_file, 'getvalue'):
-                                file_data = uploaded_file.getvalue()
-                            else:
-                                st.error("Unable to read file data for analysis")
-                                st.stop()
-                            
-                            # Validate file data before analysis
-                            if not file_data or len(file_data) == 0:
-                                st.error("File data is empty. Please try uploading the file again.")
-                                st.stop()
-                            
-                            handle_document_analysis(client, selected_model, file_data, all_params)
-                            
-                        except Exception as e:
-                            st.error(f"Error preparing file for analysis: {str(e)}")
-                            st.info("💡 **Tip**: Try re-uploading the file or use a different document.")
-                else:
-                    st.error(f"❌ {validation_msg}")
-        
-        with col2:
-            # Document preview
-            if st.session_state.uploaded_file:
-                render_document_preview(st.session_state.uploaded_file, file_source or 'upload')
+        # Workflow tabs: single document vs batch analysis
+        single_tab, batch_tab = st.tabs(["📄 Single Document", "🗂️ Batch Analysis"])
+
+        with single_tab:
+            render_single_document_tab(client, selected_model, all_params)
+
+        with batch_tab:
+            render_batch_analysis_tab(client, selected_model, all_params)
     
     else:
         st.info("👆 Please select a Document Intelligence model from the sidebar to begin.")
     
-    # Analysis results (full width)
-    render_analysis_results()
     
     # Footer
     st.markdown("---")

@@ -165,16 +165,34 @@ AZURE_DI_MODELS = {
     },
     "prebuilt-tax.us.1099": {
         "name": "US 1099",
-        "description": "Extract information from 1099 tax forms",
+        "description": "Extract information from 1099 tax forms (base form and A/B/C/DIV/INT/MISC/NEC and other variations)",
         "category": "US Tax Documents",
         "features": ["ocrHighResolution", "languages"],
         "supported_formats": ["pdf", "jpg", "png", "bmp", "tiff"],
         "max_pages": 10,
         "icon": "📋"
     },
-    "prebuilt-tax.us.1095": {
-        "name": "US 1095",
-        "description": "Extract information from 1095 tax forms",
+    "prebuilt-tax.us.1099SSA": {
+        "name": "US 1099-SSA",
+        "description": "Extract information from 1099-SSA Social Security benefit statements",
+        "category": "US Tax Documents",
+        "features": ["ocrHighResolution", "languages"],
+        "supported_formats": ["pdf", "jpg", "png", "bmp", "tiff"],
+        "max_pages": 10,
+        "icon": "📋"
+    },
+    "prebuilt-tax.us.1095A": {
+        "name": "US 1095-A",
+        "description": "Extract information from 1095-A Health Insurance Marketplace statements",
+        "category": "US Tax Documents",
+        "features": ["ocrHighResolution", "languages"],
+        "supported_formats": ["pdf", "jpg", "png", "bmp", "tiff"],
+        "max_pages": 10,
+        "icon": "📋"
+    },
+    "prebuilt-tax.us.1095C": {
+        "name": "US 1095-C",
+        "description": "Extract information from 1095-C employer-provided health insurance forms",
         "category": "US Tax Documents",
         "features": ["ocrHighResolution", "languages"],
         "supported_formats": ["pdf", "jpg", "png", "bmp", "tiff"],
@@ -292,7 +310,8 @@ AVAILABLE_FEATURES = {
                   "prebuilt-bankCheck", "prebuilt-bankStatement", "prebuilt-payStub",
                   "prebuilt-marriageCertificate", "prebuilt-creditCard", "prebuilt-healthInsuranceCard.us",
                   "prebuilt-tax.us.w2", "prebuilt-tax.us.w4", "prebuilt-tax.us.1040",
-                  "prebuilt-tax.us.1098", "prebuilt-tax.us.1099", "prebuilt-tax.us.1095",
+                  "prebuilt-tax.us.1098", "prebuilt-tax.us.1099", "prebuilt-tax.us.1099SSA",
+                  "prebuilt-tax.us.1095A", "prebuilt-tax.us.1095C",
                   "prebuilt-mortgage.us.1003", "prebuilt-mortgage.us.1004", "prebuilt-mortgage.us.1005",
                   "prebuilt-mortgage.us.1008", "prebuilt-mortgage.us.closingDisclosure"]
     },
@@ -304,7 +323,8 @@ AVAILABLE_FEATURES = {
                   "prebuilt-bankCheck", "prebuilt-bankStatement", "prebuilt-payStub",
                   "prebuilt-marriageCertificate", "prebuilt-creditCard", "prebuilt-healthInsuranceCard.us",
                   "prebuilt-tax.us.w2", "prebuilt-tax.us.w4", "prebuilt-tax.us.1040",
-                  "prebuilt-tax.us.1098", "prebuilt-tax.us.1099", "prebuilt-tax.us.1095",
+                  "prebuilt-tax.us.1098", "prebuilt-tax.us.1099", "prebuilt-tax.us.1099SSA",
+                  "prebuilt-tax.us.1095A", "prebuilt-tax.us.1095C",
                   "prebuilt-mortgage.us.1003", "prebuilt-mortgage.us.1004", "prebuilt-mortgage.us.1005",
                   "prebuilt-mortgage.us.1008", "prebuilt-mortgage.us.closingDisclosure"]
     },
@@ -330,20 +350,29 @@ AVAILABLE_FEATURES = {
     }
 }
 
-# Additional output options
+# Additional output options.
+# The Azure DI 2024-11-30 GA "output" parameter only accepts "pdf" and "figures",
+# and each is valid only for specific models, so each option carries a "models" allow-list.
 OUTPUT_OPTIONS = {
     "pdf": {
-        "label": "PDF Output",
-        "description": "Generate annotated PDF with bounding boxes"
+        "label": "Searchable PDF",
+        "description": "Generate a searchable PDF with embedded text (Read model only)",
+        "models": ["prebuilt-read"]
     },
     "figures": {
         "label": "Extract Figures",
-        "description": "Extract figures and images from the document"
-    },
-    "cropped": {
-        "label": "Cropped Images",
-        "description": "Generate cropped images of detected elements"
+        "description": "Extract detected figures as downloadable images (Layout model)",
+        "models": ["prebuilt-layout"]
     }
+}
+
+# Query fields are an add-on capability supported by Layout and prebuilt models,
+# except the US tax W-2, 1098, and 1099 models (per the 2024-11-30 GA docs).
+QUERY_FIELDS_MAX = 20
+QUERY_FIELDS_UNSUPPORTED_MODELS = {
+    "prebuilt-tax.us.w2",
+    "prebuilt-tax.us.1098",
+    "prebuilt-tax.us.1099",
 }
 
 # Model categories for organization
@@ -440,3 +469,17 @@ def get_model_display_name(model_id: str) -> str:
         name = AZURE_DI_MODELS[model_id]["name"]
         return f"{icon} {name}" if icon else name
     return model_id
+
+def get_output_options_for_model(model_id: str) -> Dict[str, Dict[str, Any]]:
+    """Return the additional output options valid for the given model."""
+    return {
+        key: info
+        for key, info in OUTPUT_OPTIONS.items()
+        if model_id in info.get("models", [])
+    }
+
+def supports_query_fields(model_id: str) -> bool:
+    """Whether the model supports the queryFields add-on capability."""
+    if not model_id:
+        return False
+    return model_id not in QUERY_FIELDS_UNSUPPORTED_MODELS
